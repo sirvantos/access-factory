@@ -1,0 +1,129 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use Access\Factory\Contract;
+use Access\Factory\CursorAgent;
+use Access\Factory\FactoryLog;
+use Access\Factory\FactoryStop;
+use Access\Factory\GitRepo;
+use Access\Factory\ProjectRoot;
+use Access\Factory\RunInput;
+use Access\Factory\ScriptFeatureScaffolder;
+use Access\Factory\Workflow;
+
+$autoloadCandidates = [
+    __DIR__.'/../../../autoload.php',
+    __DIR__.'/../vendor/autoload.php',
+];
+
+foreach ($autoloadCandidates as $candidate) {
+    if (is_file($candidate)) {
+        require $candidate;
+
+        break;
+    }
+}
+
+if (! class_exists(Contract::class)) {
+    fwrite(STDERR, "Run composer install before the factory.\n");
+    exit(1);
+}
+
+try {
+    $root = ProjectRoot::find();
+} catch (RuntimeException $exception) {
+    fwrite(STDERR, $exception->getMessage()."\n");
+    exit(1);
+}
+
+[$verbose, $fast, $arguments] = FactoryLog::extractFlags($argv);
+$command = $arguments[1] ?? '';
+$log = new FactoryLog($root, $verbose);
+$modeNote = $fast ? ' fast' : '';
+$startup = $command !== '' ? $command.($verbose ? ' verbose' : '').$modeNote : 'usage';
+if (in_array($command, ['run', 'resume'], true)) {
+    $log->progress($startup);
+} else {
+    $log->info($startup);
+}
+$contract = Contract::load($root);
+
+$workflow = new Workflow(
+    $root,
+    $contract,
+    new GitRepo($root),
+    new CursorAgent($contract->agentTimeout(), $log),
+    new ScriptFeatureScaffolder,
+    $log,
+);
+
+try {
+    match ($command) {
+        'vet' => vet($workflow),
+        'graph' => fwrite(STDOUT, $workflow->graphText()."\n"),
+        'run' => run($workflow, RunInput::description($root, array_slice($arguments, 2)), $fast ? 'fast' : $contract->defaultMode()),
+        'status' => fwrite(STDOUT, $workflow->statusText()."\n"),
+        'resume' => $workflow->resume(),
+        'stale' => stale($workflow),
+        'unlock' => $workflow->unlock(),
+        default => usage(),
+    };
+} catch (FactoryStop $stop) {
+    $log->info('exit 2 '.$stop->reason);
+    fwrite(STDERR, $stop->reason.': '.$stop->getMessage()."\n");
+    exit(2);
+} catch (Throwable $exception) {
+    $log->info('exit 1 '.$exception->getMessage());
+    fwrite(STDERR, $exception->getMessage()."\n");
+    exit(1);
+}
+
+exit(0);
+
+function vet(Workflow $workflow): void
+{
+    $problems = $workflow->vet();
+    if ($problems === []) {
+        fwrite(STDOUT, "factory contract is valid\n");
+
+        return;
+    }
+
+    foreach ($problems as $problem) {
+        fwrite(STDERR, $problem."\n");
+    }
+
+    exit(1);
+}
+
+function run(Workflow $workflow, string $description, string $mode): void
+{
+    if (trim($description) === '') {
+        fwrite(STDERR, "Pass a feature description or -i <file>.\n");
+        exit(1);
+    }
+
+    $workflow->start($description, $mode);
+    fwrite(STDOUT, $workflow->statusText()."\n");
+}
+
+function stale(Workflow $workflow): void
+{
+    $ids = $workflow->staleIds();
+    if ($ids === []) {
+        fwrite(STDOUT, "no stale tasks\n");
+
+        return;
+    }
+
+    fwrite(STDOUT, implode("\n", $ids)."\n");
+    exit(2);
+}
+
+function usage(): never
+{
+    fwrite(STDERR, "Usage: factory [-v] [--fast] vet|graph|run [-i <file>]|status|resume|stale|unlock\n");
+    exit(1);
+}

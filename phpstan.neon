@@ -1,0 +1,9 @@
+parameters:
+    level: 8
+    paths:
+        - src
+        - bin/factory
+    checkMissingCallableSignature: true
+    checkTooWideReturnTypesInProtectedAndPublicMethods: true
+    checkUninitializedProperties: true
+    reportUnmatchedIgnoredErrors: true

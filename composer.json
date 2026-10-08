@@ -1,0 +1,36 @@
+{
+    "name": "access/factory",
+    "description": "Speckit factory orchestrator. The consumer keeps factory/factory.yaml and factory/prompts.",
+    "type": "library",
+    "license": "MIT",
+    "version": "0.1.0",
+    "require": {
+        "php": "^8.4",
+        "symfony/process": "^7.4 || ^8.0",
+        "symfony/yaml": "^7.4 || ^8.0"
+    },
+    "require-dev": {
+        "laravel/pint": "^1.27",
+        "pestphp/pest": "^4",
+        "phpstan/phpstan": "^2"
+    },
+    "autoload": {
+        "psr-4": {
+            "Access\\Factory\\": "src/"
+        }
+    },
+    "bin": [
+        "bin/factory"
+    ],
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        },
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "scripts": {
+        "test": "pest --compact"
+    }
+}
