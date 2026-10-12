@@ -200,6 +200,76 @@ it('keeps analyze in fast mode but skips verify and code reviews', function () {
     }
 });
 
+it('resumes a clarify question through plan', function () {
+    $root = factoryRoot();
+
+    try {
+        $plans = 0;
+        $patches = 0;
+        $agent = factoryAgent(function (string $cwd, string $prompt) use (&$plans, &$patches): string {
+            $dir = 'specs/001-demo';
+            if (str_contains($prompt, 'SPEC_PATCH')) {
+                $patches++;
+
+                return '{"status":"done","summary":"patched","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'speckit-clarify')) {
+                $questions = $cwd.'/'.$dir.'/.factory/questions.md';
+                if (is_file($questions) && str_contains((string) file_get_contents($questions), 'North')) {
+                    return '{"status":"done","summary":"clarified","assumptions":[]}';
+                }
+
+                return '{"status":"spec_gap","summary":"Which gate?","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'IMPLEMENT_TASK')) {
+                file_put_contents($cwd.'/recorded.txt', "pass\n");
+
+                return '{"status":"done","summary":"recorded","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'QUALITY_REVIEW') || str_contains($prompt, 'FUNCTIONAL_REVIEW')) {
+                return '{"verdict":"approve","issues":[],"scenarios":[{"id":"1","result":"pass"}]}';
+            }
+
+            if (str_contains($prompt, 'speckit-analyze')) {
+                return '{"verdict":"approve","issues":[],"assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'speckit-specify')) {
+                file_put_contents($cwd.'/'.$dir.'/spec.md', "User Story 1\n\nA pass is recorded.\n");
+            }
+
+            if (str_contains($prompt, 'speckit-plan')) {
+                $plans++;
+                file_put_contents($cwd.'/'.$dir.'/plan.md', "plan\n");
+            }
+
+            if (str_contains($prompt, 'speckit-tasks')) {
+                file_put_contents($cwd.'/'.$dir.'/tasks.md', "## Phase 1: Setup\n\n- [ ] T001 Record a pass\n");
+            }
+
+            return '{"status":"done","summary":"ok","assumptions":[]}';
+        });
+
+        $workflow = factoryWorkflow($root, $agent);
+        expect(fn () => $workflow->start('Record a gate pass'))
+            ->toThrow(FactoryStop::class, 'questions.md');
+
+        $questions = $root.'/specs/001-demo/.factory/questions.md';
+        file_put_contents($questions, ((string) file_get_contents($questions))."\nNorth\n");
+        $workflow->resume();
+
+        expect($workflow->statusText())->toBe('specs/001-demo done')
+            ->and($plans)->toBe(1)
+            ->and($patches)->toBe(0)
+            ->and(file_get_contents($root.'/specs/001-demo/plan.md'))->toBe("plan\n");
+    } finally {
+        factoryRemove($root);
+    }
+});
+
 it('stops when clarify needs a human answer', function () {
     $root = factoryRoot();
 
@@ -1590,6 +1660,519 @@ it('implements five tasks in one wave and leaves the sixth for the next', functi
             ->and($implementPrompts[1])->toContain('T006')
             ->and($tasks)->toContain('- [x] T001')
             ->and($tasks)->toContain('- [x] T006');
+    } finally {
+        factoryRemove($root);
+    }
+});
+
+it('resolves an implementer question from the spec and finishes the wave', function () {
+    $root = factoryRoot();
+
+    try {
+        $plans = 0;
+        $implementPrompts = [];
+        $agent = factoryAgent(function (string $cwd, string $prompt) use (&$plans, &$implementPrompts): string {
+            $dir = 'specs/001-demo';
+            if (str_contains($prompt, 'RESOLVE_QUESTIONS')) {
+                $spec = $cwd.'/'.$dir.'/spec.md';
+                file_put_contents($spec, ((string) file_get_contents($spec))."Answer: gate_id\n");
+
+                return '{"status":"resolved","summary":"The column is gate_id.","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'IMPLEMENT_TASK') || str_contains($prompt, 'Continue from that code')) {
+                $implementPrompts[] = $prompt;
+                if (count($implementPrompts) === 1) {
+                    file_put_contents($cwd.'/'.$dir.'/.factory/questions.md', "Which column?\n");
+
+                    return '{"status":"spec_gap","summary":"Which column?","assumptions":[]}';
+                }
+
+                file_put_contents($cwd.'/recorded.txt', "pass\n");
+
+                return '{"status":"done","summary":"recorded","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'QUALITY_REVIEW') || str_contains($prompt, 'FUNCTIONAL_REVIEW')) {
+                return '{"verdict":"approve","issues":[],"scenarios":[{"id":"1","result":"pass"}]}';
+            }
+
+            if (str_contains($prompt, 'speckit-analyze')) {
+                return '{"verdict":"approve","issues":[],"assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'speckit-specify')) {
+                file_put_contents($cwd.'/'.$dir.'/spec.md', "User Story 1\n\nThe column is gate_id.\n");
+            }
+
+            if (str_contains($prompt, 'speckit-plan')) {
+                $plans++;
+                file_put_contents($cwd.'/'.$dir.'/plan.md', $plans === 1 ? "plan\n" : "replanned\n");
+            }
+
+            if (str_contains($prompt, 'speckit-tasks')) {
+                file_put_contents($cwd.'/'.$dir.'/tasks.md', "## Phase 1: Setup\n\n- [ ] T001 Record a pass\n");
+            }
+
+            return '{"status":"done","summary":"ok","assumptions":[]}';
+        });
+
+        $workflow = factoryWorkflow($root, $agent);
+        $workflow->start('Record a gate pass');
+
+        expect($implementPrompts)->toHaveCount(2)
+            ->and($implementPrompts[1])->toContain('gate_id')
+            ->and($implementPrompts[1])->not->toContain('IMPLEMENT_TASK')
+            ->and(file_get_contents($root.'/recorded.txt'))->toBe("pass\n")
+            ->and(file_get_contents($root.'/specs/001-demo/spec.md'))->toContain('Answer: gate_id')
+            ->and(file_get_contents($root.'/specs/001-demo/plan.md'))->toBe("plan\n")
+            ->and($workflow->statusText())->toBe('specs/001-demo done');
+    } finally {
+        factoryRemove($root);
+    }
+});
+
+it('resumes an unanswered implementer question by patching the spec', function () {
+    $root = factoryRoot();
+
+    try {
+        $plans = 0;
+        $implementPrompts = [];
+        $featurePrompts = [];
+        $agent = factoryAgent(function (string $cwd, string $prompt) use (&$plans, &$implementPrompts, &$featurePrompts): string {
+            $dir = 'specs/001-demo';
+            if (str_contains($prompt, 'SPEC_PATCH')) {
+                $spec = $cwd.'/'.$dir.'/spec.md';
+                file_put_contents($spec, ((string) file_get_contents($spec))."North gate.\n");
+
+                return '{"status":"done","summary":"Use the north gate.","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'RESOLVE_QUESTIONS')) {
+                return '{"status":"spec_gap","summary":"Which gate?","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'FEATURE_TESTS') || str_contains($prompt, 'Adjust only the feature tests')) {
+                $featurePrompts[] = $prompt;
+
+                return '{"status":"done","summary":"tests","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'IMPLEMENT_TASK') || str_contains($prompt, 'Continue from that code')) {
+                $implementPrompts[] = $prompt;
+                if (count($implementPrompts) === 1) {
+                    file_put_contents($cwd.'/'.$dir.'/.factory/questions.md', "Which gate?\n");
+
+                    return factoryResultStream('{"status":"spec_gap","summary":"Which gate?","assumptions":[]}');
+                }
+
+                file_put_contents($cwd.'/recorded.txt', "pass\n");
+
+                return factoryResultStream('{"status":"done","summary":"recorded","assumptions":[]}');
+            }
+
+            if (str_contains($prompt, 'QUALITY_REVIEW') || str_contains($prompt, 'FUNCTIONAL_REVIEW')) {
+                return '{"verdict":"approve","issues":[],"scenarios":[{"id":"1","result":"pass"}]}';
+            }
+
+            if (str_contains($prompt, 'speckit-analyze')) {
+                return '{"verdict":"approve","issues":[],"assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'speckit-specify')) {
+                file_put_contents($cwd.'/'.$dir.'/spec.md', "User Story 1\n\nA pass is recorded.\n");
+            }
+
+            if (str_contains($prompt, 'speckit-plan')) {
+                $plans++;
+                file_put_contents($cwd.'/'.$dir.'/plan.md', $plans === 1 ? "plan\n" : "replanned\n");
+            }
+
+            if (str_contains($prompt, 'speckit-tasks')) {
+                file_put_contents($cwd.'/'.$dir.'/tasks.md', "## Phase 1: Setup\n\n- [ ] T001 Record a pass\n");
+            }
+
+            return '{"status":"done","summary":"ok","assumptions":[]}';
+        });
+
+        $workflow = factoryWorkflow($root, $agent);
+        expect(fn () => $workflow->start('Record a gate pass'))
+            ->toThrow(FactoryStop::class, 'spec gap');
+
+        $questions = $root.'/specs/001-demo/.factory/questions.md';
+        file_put_contents($questions, ((string) file_get_contents($questions))."\nUse the north gate.\n");
+        $workflow->resume();
+
+        expect($workflow->statusText())->toBe('specs/001-demo done')
+            ->and(file_get_contents($root.'/specs/001-demo/plan.md'))->toBe("plan\n")
+            ->and(file_get_contents($root.'/specs/001-demo/spec.md'))->toContain('North gate.')
+            ->and(file_get_contents($root.'/recorded.txt'))->toBe("pass\n")
+            ->and($featurePrompts)->toHaveCount(1)
+            ->and($implementPrompts)->toHaveCount(2)
+            ->and($implementPrompts[1])->toContain('north gate')
+            ->and($implementPrompts[1])->not->toContain('IMPLEMENT_TASK');
+    } finally {
+        factoryRemove($root);
+    }
+});
+
+it('replans when an answered implementer question changes the plan', function () {
+    $root = factoryRoot();
+
+    try {
+        $plans = 0;
+        $implementPrompts = [];
+        $agent = factoryAgent(function (string $cwd, string $prompt) use (&$plans, &$implementPrompts): string {
+            $dir = 'specs/001-demo';
+            if (str_contains($prompt, 'SPEC_PATCH')) {
+                return '{"status":"replan","summary":"The plan no longer fits.","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'RESOLVE_QUESTIONS')) {
+                return '{"status":"spec_gap","summary":"Which gate?","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'IMPLEMENT_TASK') || str_contains($prompt, 'Continue from that code')) {
+                $implementPrompts[] = $prompt;
+                if (count($implementPrompts) === 1) {
+                    file_put_contents($cwd.'/'.$dir.'/.factory/questions.md', "Which gate?\n");
+
+                    return factoryResultStream('{"status":"spec_gap","summary":"Which gate?","assumptions":[]}');
+                }
+
+                file_put_contents($cwd.'/recorded.txt', "pass\n");
+
+                return factoryResultStream('{"status":"done","summary":"recorded","assumptions":[]}');
+            }
+
+            if (str_contains($prompt, 'QUALITY_REVIEW') || str_contains($prompt, 'FUNCTIONAL_REVIEW')) {
+                return '{"verdict":"approve","issues":[],"scenarios":[{"id":"1","result":"pass"}]}';
+            }
+
+            if (str_contains($prompt, 'speckit-analyze')) {
+                return '{"verdict":"approve","issues":[],"assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'speckit-specify')) {
+                file_put_contents($cwd.'/'.$dir.'/spec.md', "User Story 1\n\nA pass is recorded.\n");
+            }
+
+            if (str_contains($prompt, 'speckit-plan')) {
+                $plans++;
+                file_put_contents($cwd.'/'.$dir.'/plan.md', $plans === 1 ? "plan\n" : "replanned\n");
+            }
+
+            if (str_contains($prompt, 'speckit-tasks')) {
+                file_put_contents($cwd.'/'.$dir.'/tasks.md', "## Phase 1: Setup\n\n- [ ] T001 Record a pass\n");
+            }
+
+            return '{"status":"done","summary":"ok","assumptions":[]}';
+        });
+
+        $workflow = factoryWorkflow($root, $agent);
+        expect(fn () => $workflow->start('Record a gate pass'))
+            ->toThrow(FactoryStop::class, 'spec gap');
+
+        file_put_contents($root.'/specs/001-demo/.factory/questions.md', "Which gate?\n\nUse the north gate.\n");
+        $workflow->resume();
+
+        expect($workflow->statusText())->toBe('specs/001-demo done')
+            ->and(file_get_contents($root.'/specs/001-demo/plan.md'))->toBe("replanned\n")
+            ->and(file_get_contents($root.'/recorded.txt'))->toBe("pass\n")
+            ->and($implementPrompts)->toHaveCount(2)
+            ->and($implementPrompts[1])->toContain('IMPLEMENT_TASK')
+            ->and($implementPrompts[1])->toContain('replanned');
+    } finally {
+        factoryRemove($root);
+    }
+});
+
+it('rewrites a feature test when the implementer question is outside the spec', function () {
+    $root = factoryRoot();
+
+    try {
+        $implementPrompts = [];
+        $featurePrompts = [];
+        $agent = factoryAgent(function (string $cwd, string $prompt) use (&$implementPrompts, &$featurePrompts): string {
+            $dir = 'specs/001-demo';
+            if (str_contains($prompt, 'RESOLVE_QUESTIONS')) {
+                return '{"status":"adjust_tests","summary":"The test expects a timestamp the spec does not state.","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'FEATURE_TESTS') || str_contains($prompt, 'Adjust only the feature tests')) {
+                $featurePrompts[] = $prompt;
+                if (count($featurePrompts) === 2) {
+                    file_put_contents($cwd.'/aligned.txt', "aligned\n");
+                }
+
+                return '{"status":"done","summary":"tests","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'IMPLEMENT_TASK') || str_contains($prompt, 'Continue from that code')) {
+                $implementPrompts[] = $prompt;
+                if (count($implementPrompts) === 1) {
+                    file_put_contents($cwd.'/'.$dir.'/.factory/questions.md', "The test expects a timestamp the spec does not state.\n");
+
+                    return '{"status":"spec_gap","summary":"The test expects a timestamp the spec does not state.","assumptions":[]}';
+                }
+
+                file_put_contents($cwd.'/recorded.txt', "pass\n");
+
+                return '{"status":"done","summary":"recorded","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'QUALITY_REVIEW') || str_contains($prompt, 'FUNCTIONAL_REVIEW')) {
+                return '{"verdict":"approve","issues":[],"scenarios":[{"id":"1","result":"pass"}]}';
+            }
+
+            if (str_contains($prompt, 'speckit-analyze')) {
+                return '{"verdict":"approve","issues":[],"assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'speckit-specify')) {
+                file_put_contents($cwd.'/'.$dir.'/spec.md', "User Story 1\n\nA pass is recorded.\n");
+            }
+
+            if (str_contains($prompt, 'speckit-plan')) {
+                file_put_contents($cwd.'/'.$dir.'/plan.md', "plan\n");
+            }
+
+            if (str_contains($prompt, 'speckit-tasks')) {
+                file_put_contents($cwd.'/'.$dir.'/tasks.md', "## Phase 1: Setup\n\n- [ ] T001 Record a pass\n");
+            }
+
+            return '{"status":"done","summary":"ok","assumptions":[]}';
+        });
+
+        $workflow = factoryWorkflow($root, $agent);
+        $workflow->start('Record a gate pass');
+
+        expect($workflow->statusText())->toBe('specs/001-demo done')
+            ->and(file_get_contents($root.'/aligned.txt'))->toBe("aligned\n")
+            ->and(file_get_contents($root.'/recorded.txt'))->toBe("pass\n")
+            ->and(file_get_contents($root.'/specs/001-demo/spec.md'))->not->toContain('timestamp')
+            ->and($featurePrompts)->toHaveCount(2)
+            ->and($featurePrompts[1])->toContain('Change the feature test')
+            ->and($implementPrompts)->toHaveCount(2)
+            ->and($implementPrompts[1])->not->toContain('IMPLEMENT_TASK');
+    } finally {
+        factoryRemove($root);
+    }
+});
+
+it('sends a false platform limit back to the implementer', function () {
+    $root = factoryRoot();
+
+    try {
+        $implementPrompts = [];
+        $featurePrompts = [];
+        $agent = factoryAgent(function (string $cwd, string $prompt) use (&$implementPrompts, &$featurePrompts): string {
+            $dir = 'specs/001-demo';
+            if (str_contains($prompt, 'PLATFORM_LIMIT')) {
+                return '{"status":"rejected","summary":"PHP can return a list.","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'FEATURE_TESTS') || str_contains($prompt, 'Adjust only the feature tests')) {
+                $featurePrompts[] = $prompt;
+
+                return '{"status":"done","summary":"tests","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'IMPLEMENT_TASK') || str_contains($prompt, 'Continue from that code')) {
+                $implementPrompts[] = $prompt;
+                if (count($implementPrompts) === 1) {
+                    return '{"status":"platform_limit","summary":"PHP cannot return two values.","scope":"test","assumptions":[]}';
+                }
+
+                file_put_contents($cwd.'/recorded.txt', "pass\n");
+
+                return '{"status":"done","summary":"recorded","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'QUALITY_REVIEW') || str_contains($prompt, 'FUNCTIONAL_REVIEW')) {
+                return '{"verdict":"approve","issues":[],"scenarios":[{"id":"1","result":"pass"}]}';
+            }
+
+            if (str_contains($prompt, 'speckit-analyze')) {
+                return '{"verdict":"approve","issues":[],"assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'speckit-specify')) {
+                file_put_contents($cwd.'/'.$dir.'/spec.md', "User Story 1\n\nA pass is recorded.\n");
+            }
+
+            if (str_contains($prompt, 'speckit-plan')) {
+                file_put_contents($cwd.'/'.$dir.'/plan.md', "plan\n");
+            }
+
+            if (str_contains($prompt, 'speckit-tasks')) {
+                file_put_contents($cwd.'/'.$dir.'/tasks.md', "## Phase 1: Setup\n\n- [ ] T001 Record a pass\n");
+            }
+
+            return '{"status":"done","summary":"ok","assumptions":[]}';
+        });
+
+        $workflow = factoryWorkflow($root, $agent);
+        $workflow->start('Record a gate pass');
+
+        expect($workflow->statusText())->toBe('specs/001-demo done')
+            ->and(file_get_contents($root.'/recorded.txt'))->toBe("pass\n")
+            ->and(file_get_contents($root.'/specs/001-demo/spec.md'))->not->toContain('Limitation')
+            ->and(file_get_contents($root.'/specs/001-demo/plan.md'))->toBe("plan\n")
+            ->and($featurePrompts)->toHaveCount(1)
+            ->and($implementPrompts)->toHaveCount(2)
+            ->and($implementPrompts[1])->toContain('PHP can return a list.')
+            ->and($implementPrompts[1])->not->toContain('IMPLEMENT_TASK');
+    } finally {
+        factoryRemove($root);
+    }
+});
+
+it('records a platform limit and rewrites the test when only the test shape is impossible', function () {
+    $root = factoryRoot();
+
+    try {
+        $implementPrompts = [];
+        $featurePrompts = [];
+        $agent = factoryAgent(function (string $cwd, string $prompt) use (&$implementPrompts, &$featurePrompts): string {
+            $dir = 'specs/001-demo';
+            if (str_contains($prompt, 'PLATFORM_LIMIT')) {
+                $spec = $cwd.'/'.$dir.'/spec.md';
+                file_put_contents($spec, ((string) file_get_contents($spec))."Limitation: final classes cannot be mocked.\n");
+
+                return '{"status":"adjust_tests","summary":"Final classes cannot be mocked.","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'FEATURE_TESTS') || str_contains($prompt, 'Adjust only the feature tests')) {
+                $featurePrompts[] = $prompt;
+                if (count($featurePrompts) === 2) {
+                    file_put_contents($cwd.'/aligned.txt', "aligned\n");
+                }
+
+                return '{"status":"done","summary":"tests","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'IMPLEMENT_TASK') || str_contains($prompt, 'Continue from that code')) {
+                $implementPrompts[] = $prompt;
+                if (count($implementPrompts) === 1) {
+                    return '{"status":"platform_limit","summary":"Final classes cannot be mocked.","scope":"test","assumptions":[]}';
+                }
+
+                file_put_contents($cwd.'/recorded.txt', "pass\n");
+
+                return '{"status":"done","summary":"recorded","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'QUALITY_REVIEW') || str_contains($prompt, 'FUNCTIONAL_REVIEW')) {
+                return '{"verdict":"approve","issues":[],"scenarios":[{"id":"1","result":"pass"}]}';
+            }
+
+            if (str_contains($prompt, 'speckit-analyze')) {
+                return '{"verdict":"approve","issues":[],"assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'speckit-specify')) {
+                file_put_contents($cwd.'/'.$dir.'/spec.md', "User Story 1\n\nA pass is recorded.\n");
+            }
+
+            if (str_contains($prompt, 'speckit-plan')) {
+                file_put_contents($cwd.'/'.$dir.'/plan.md', "plan\n");
+            }
+
+            if (str_contains($prompt, 'speckit-tasks')) {
+                file_put_contents($cwd.'/'.$dir.'/tasks.md', "## Phase 1: Setup\n\n- [ ] T001 Record a pass\n");
+            }
+
+            return '{"status":"done","summary":"ok","assumptions":[]}';
+        });
+
+        $workflow = factoryWorkflow($root, $agent);
+        $workflow->start('Record a gate pass');
+
+        expect($workflow->statusText())->toBe('specs/001-demo done')
+            ->and(file_get_contents($root.'/specs/001-demo/spec.md'))->toContain('Limitation: final classes cannot be mocked.')
+            ->and(file_get_contents($root.'/aligned.txt'))->toBe("aligned\n")
+            ->and(file_get_contents($root.'/recorded.txt'))->toBe("pass\n")
+            ->and(file_get_contents($root.'/specs/001-demo/plan.md'))->toBe("plan\n")
+            ->and($featurePrompts)->toHaveCount(2)
+            ->and($featurePrompts[1])->toContain('Change the feature test')
+            ->and($implementPrompts)->toHaveCount(2)
+            ->and($implementPrompts[1])->not->toContain('IMPLEMENT_TASK');
+    } finally {
+        factoryRemove($root);
+    }
+});
+
+it('stops when a platform limit removes the behavior and resumes on the same wave', function () {
+    $root = factoryRoot();
+
+    try {
+        $plans = 0;
+        $implementPrompts = [];
+        $agent = factoryAgent(function (string $cwd, string $prompt) use (&$plans, &$implementPrompts): string {
+            $dir = 'specs/001-demo';
+            if (str_contains($prompt, 'SPEC_PATCH')) {
+                $spec = $cwd.'/'.$dir.'/spec.md';
+                file_put_contents($spec, ((string) file_get_contents($spec))."Single process.\n");
+
+                return '{"status":"done","summary":"Ship the single-process behavior.","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'PLATFORM_LIMIT')) {
+                return '{"status":"needs_human","summary":"The runtime cannot fork.","assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'IMPLEMENT_TASK') || str_contains($prompt, 'Continue from that code')) {
+                $implementPrompts[] = $prompt;
+                if (count($implementPrompts) === 1) {
+                    return factoryResultStream('{"status":"platform_limit","summary":"The runtime cannot fork.","scope":"behavior","assumptions":[]}');
+                }
+
+                file_put_contents($cwd.'/recorded.txt', "pass\n");
+
+                return factoryResultStream('{"status":"done","summary":"recorded","assumptions":[]}');
+            }
+
+            if (str_contains($prompt, 'QUALITY_REVIEW') || str_contains($prompt, 'FUNCTIONAL_REVIEW')) {
+                return '{"verdict":"approve","issues":[],"scenarios":[{"id":"1","result":"pass"}]}';
+            }
+
+            if (str_contains($prompt, 'speckit-analyze')) {
+                return '{"verdict":"approve","issues":[],"assumptions":[]}';
+            }
+
+            if (str_contains($prompt, 'speckit-specify')) {
+                file_put_contents($cwd.'/'.$dir.'/spec.md', "User Story 1\n\nA pass is recorded.\n");
+            }
+
+            if (str_contains($prompt, 'speckit-plan')) {
+                $plans++;
+                file_put_contents($cwd.'/'.$dir.'/plan.md', $plans === 1 ? "plan\n" : "replanned\n");
+            }
+
+            if (str_contains($prompt, 'speckit-tasks')) {
+                file_put_contents($cwd.'/'.$dir.'/tasks.md', "## Phase 1: Setup\n\n- [ ] T001 Record a pass\n");
+            }
+
+            return '{"status":"done","summary":"ok","assumptions":[]}';
+        });
+
+        $workflow = factoryWorkflow($root, $agent);
+        expect(fn () => $workflow->start('Record a gate pass'))
+            ->toThrow(FactoryStop::class, 'platform limit');
+
+        $questions = $root.'/specs/001-demo/.factory/questions.md';
+        expect(file_get_contents($questions))->toContain('The runtime cannot fork.');
+        file_put_contents($questions, ((string) file_get_contents($questions))."\nShip the single-process behavior.\n");
+        $workflow->resume();
+
+        expect($workflow->statusText())->toBe('specs/001-demo done')
+            ->and(file_get_contents($root.'/specs/001-demo/plan.md'))->toBe("plan\n")
+            ->and(file_get_contents($root.'/specs/001-demo/spec.md'))->toContain('Single process.')
+            ->and(file_get_contents($root.'/recorded.txt'))->toBe("pass\n")
+            ->and($implementPrompts)->toHaveCount(2)
+            ->and($implementPrompts[1])->toContain('single-process')
+            ->and($implementPrompts[1])->not->toContain('IMPLEMENT_TASK');
     } finally {
         factoryRemove($root);
     }

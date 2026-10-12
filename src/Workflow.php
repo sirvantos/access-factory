@@ -201,6 +201,12 @@ final class Workflow
             return;
         }
 
+        if ($step === 'spec_patch') {
+            $this->specPatch();
+
+            return;
+        }
+
         if ($step === 'implement') {
             $this->implement();
 
@@ -439,20 +445,25 @@ final class Workflow
             $worktree = $this->prepareWorktree($label, 'implementer');
             $this->overlayFeature($worktree, $this->load()->featureDir);
             $featureFollowUp = $featureChatId !== null && $featureChatId !== '' && $committed;
-            $this->progress('implement '.$done.'/'.$total.' · feature tests '.$label.' attempt '.$attempts.'/'.$this->contract->maxAttempts());
-            $featureReply = $this->invoke(
-                $worktree,
-                'feature_tester',
-                $this->featureTestsPrompt($wave, $featureFollowUp),
-                $featureFollowUp ? $featureChatId : null,
-                $label.'-feature-tests',
-                $attempts,
-            );
-            $featureChatId = $featureReply->chatId ?? $featureChatId;
-            if (! $this->acceptWaveStep($worktree, $wave, $label, $attempts, $chatId, $featureChatId, $featureReply)) {
-                $committed = false;
+            $feedback = $this->readFeedback($label);
+            if (($feedback['kind'] ?? '') === 'spec_resolved') {
+                $featureReply = new AgentReply('done', '', $featureChatId, ['assumptions' => []]);
+            } else {
+                $this->progress('implement '.$done.'/'.$total.' · feature tests '.$label.' attempt '.$attempts.'/'.$this->contract->maxAttempts());
+                $featureReply = $this->invoke(
+                    $worktree,
+                    'feature_tester',
+                    $this->featureTestsPrompt($wave, $featureFollowUp),
+                    $featureFollowUp ? $featureChatId : null,
+                    $label.'-feature-tests',
+                    $attempts,
+                );
+                $featureChatId = $featureReply->chatId ?? $featureChatId;
+                if (! $this->acceptWaveStep($worktree, $wave, $label, $attempts, $chatId, $featureChatId, $featureReply)) {
+                    $committed = false;
 
-                continue;
+                    continue;
+                }
             }
 
             $followUp = $chatId !== null && $chatId !== '' && $committed;
@@ -466,7 +477,8 @@ final class Workflow
                 $attempts,
             );
             $chatId = $reply->chatId ?? $chatId;
-            if (! $this->acceptWaveStep($worktree, $wave, $label, $attempts, $chatId, $featureChatId, $reply)) {
+            [$worktree, $reply, $chatId, $retry] = $this->settleImplementerBlock($worktree, $wave, $label, $attempts, $chatId, $featureChatId, $reply);
+            if ($retry || ! $this->acceptWaveStep($worktree, $wave, $label, $attempts, $chatId, $featureChatId, $reply)) {
                 $committed = false;
 
                 continue;
@@ -541,6 +553,266 @@ final class Workflow
         }
 
         $this->stop('retries_exhausted', $label.' used '.$this->contract->maxAttempts().' attempts.');
+    }
+
+    /**
+     * @param  list<TaskItem>  $wave
+     * @return array{0: string, 1: AgentReply, 2: ?string, 3: bool}
+     */
+    private function settleImplementerBlock(
+        string $worktree,
+        array $wave,
+        string $label,
+        int $attempts,
+        ?string $chatId,
+        ?string $featureChatId,
+        AgentReply $reply,
+    ): array {
+        if (! in_array($reply->status, ['spec_gap', 'platform_limit'], true)) {
+            return [$worktree, $reply, $chatId, false];
+        }
+
+        $featureDir = $this->load()->featureDir;
+        $this->sealWorktree($worktree, $featureDir);
+
+        try {
+            $this->assertCleanRole('implementer', $featureDir, $worktree);
+        } catch (FactoryStop $stop) {
+            $this->git->discard($worktree);
+            $this->markAttemptTree($label, false);
+            $this->rememberWave($wave, $attempts, $chatId, $featureChatId);
+            $this->stop($stop->reason, $stop->getMessage());
+        }
+
+        if ($reply->status === 'spec_gap') {
+            $this->ensureQuestions($worktree, $this->load(), $reply);
+        }
+
+        $message = $reply->status === 'platform_limit'
+            ? 'record platform limit for '.$label
+            : 'record spec gap for '.$label;
+        $this->keepDraft($worktree, 'factory/'.$label, $message);
+        $this->mirrorFeature($worktree, $featureDir);
+        $this->git->removeWorktree($worktree, 'factory/'.$label);
+        $this->rememberWave($wave, $attempts, $chatId, $featureChatId);
+        $this->markAttemptTree($label, true);
+
+        if ($reply->status === 'platform_limit') {
+            return $this->settlePlatformLimit($wave, $label, $attempts, $chatId, $featureChatId, $featureDir, $reply);
+        }
+
+        $questions = $this->read($this->root.'/'.$featureDir.'/.factory/questions.md');
+        $resolved = $this->resolveQuestions($label, $questions);
+        if (! in_array($resolved->status, ['resolved', 'adjust_tests'], true)) {
+            $this->stop('unresolved_questions', 'The implementer reported a spec gap for '.$label.'.');
+        }
+
+        $summary = $resolved->payload['summary'] ?? null;
+        $this->rememberFeedback($label, [
+            'kind' => $resolved->status === 'adjust_tests' ? 'adjust_tests' : 'spec_resolved',
+            'summary' => is_string($summary) && $summary !== '' ? $summary : $resolved->text,
+        ]);
+
+        $worktree = $this->prepareWorktree($label, 'implementer');
+        $this->overlayFeature($worktree, $featureDir);
+        if ($resolved->status === 'adjust_tests') {
+            $featureReply = $this->invoke(
+                $worktree,
+                'feature_tester',
+                $this->featureTestsPrompt($wave, true),
+                $featureChatId,
+                $label.'-feature-tests',
+                $attempts,
+            );
+            $featureChatId = $featureReply->chatId ?? $featureChatId;
+            $this->rememberWave($wave, $attempts, $chatId, $featureChatId);
+            if (! $this->acceptWaveStep($worktree, $wave, $label, $attempts, $chatId, $featureChatId, $featureReply)) {
+                return [$worktree, $featureReply, $chatId, true];
+            }
+        }
+
+        $followUp = $this->invoke(
+            $worktree,
+            'implementer',
+            $this->implementPrompt($wave, true),
+            $chatId,
+            $label,
+            $attempts,
+        );
+
+        return [$worktree, $followUp, $followUp->chatId ?? $chatId, false];
+    }
+
+    /**
+     * @param  list<TaskItem>  $wave
+     * @return array{0: string, 1: AgentReply, 2: ?string, 3: bool}
+     */
+    private function settlePlatformLimit(
+        array $wave,
+        string $label,
+        int $attempts,
+        ?string $chatId,
+        ?string $featureChatId,
+        string $featureDir,
+        AgentReply $report,
+    ): array {
+        $decision = $this->checkPlatformLimit($label, $report);
+        $kind = match ($decision->status) {
+            'rejected' => 'platform_rejected',
+            'adjust_tests' => 'adjust_tests',
+            default => '',
+        };
+        if ($kind === '') {
+            $this->writeQuestions($featureDir, $decision);
+            $this->stop('unresolved_questions', 'The implementer reported a platform limit for '.$label.'.');
+        }
+
+        $summary = $decision->payload['summary'] ?? null;
+        $this->rememberFeedback($label, [
+            'kind' => $kind,
+            'summary' => is_string($summary) && $summary !== '' ? $summary : $decision->text,
+        ]);
+
+        $worktree = $this->prepareWorktree($label, 'implementer');
+        $this->overlayFeature($worktree, $featureDir);
+        if ($decision->status === 'adjust_tests') {
+            $featureReply = $this->invoke(
+                $worktree,
+                'feature_tester',
+                $this->featureTestsPrompt($wave, true),
+                $featureChatId,
+                $label.'-feature-tests',
+                $attempts,
+            );
+            $featureChatId = $featureReply->chatId ?? $featureChatId;
+            $this->rememberWave($wave, $attempts, $chatId, $featureChatId);
+            if (! $this->acceptWaveStep($worktree, $wave, $label, $attempts, $chatId, $featureChatId, $featureReply)) {
+                return [$worktree, $featureReply, $chatId, true];
+            }
+        }
+
+        $followUp = $this->invoke(
+            $worktree,
+            'implementer',
+            $this->implementPrompt($wave, true),
+            $chatId,
+            $label,
+            $attempts,
+        );
+
+        return [$worktree, $followUp, $followUp->chatId ?? $chatId, false];
+    }
+
+    private function checkPlatformLimit(string $label, AgentReply $report): AgentReply
+    {
+        $state = $this->load();
+        $model = $this->contract->model('spec_editor');
+        $worktree = $this->prepareWorktree('platform-'.$label, 'spec_author');
+        $this->overlayFeature($worktree, $state->featureDir);
+        $reply = $this->invoke(
+            $worktree,
+            'spec_author',
+            $this->platformLimitPrompt($report),
+            $this->authorChat($model),
+            'platform-'.$label,
+            1,
+            $model,
+        );
+        $this->rememberAuthor($reply->chatId, $model);
+        $this->sealWorktree($worktree, $state->featureDir);
+
+        try {
+            $this->assertCleanRole('spec_author', $state->featureDir, $worktree);
+        } catch (FactoryStop $stop) {
+            $this->git->discard($worktree);
+            $this->git->removeWorktree($worktree, 'factory/platform-'.$label);
+            $this->stop($stop->reason, $stop->getMessage());
+        }
+
+        if ($reply->status === 'adjust_tests') {
+            $this->keepDraft($worktree, 'factory/platform-'.$label, 'record platform limit for '.$label);
+            $this->mirrorFeature($worktree, $state->featureDir);
+        } else {
+            $this->git->discard($worktree);
+        }
+
+        $this->git->removeWorktree($worktree, 'factory/platform-'.$label);
+
+        return $reply;
+    }
+
+    private function platformLimitPrompt(AgentReply $report): string
+    {
+        $summary = $report->payload['summary'] ?? null;
+        $claim = is_string($summary) && $summary !== '' ? $summary : $report->text;
+        $scope = $report->payload['scope'] ?? '';
+        $scopeText = is_string($scope) ? $scope : '';
+
+        return <<<PROMPT
+        PLATFORM_LIMIT
+        The implementer reported this limit: {$claim}
+        Scope: {$scopeText}
+        When the claim is false, finish with status rejected and leave spec.md unchanged.
+        When the claim is true and only the test shape is impossible, write one Limitation line into spec.md and finish with status adjust_tests.
+        When the claim is true and the user-facing behavior itself cannot be built, finish with status needs_human.
+        Do not invent a product behavior. Do not edit plan.md or tasks.md. Do not run git.
+        The entire final message is one JSON object and nothing else:
+        {"status":"rejected","summary":"","files_changed":[],"assumptions":[]}
+        PROMPT;
+    }
+
+    private function resolveQuestions(string $label, string $questions): AgentReply
+    {
+        $state = $this->load();
+        $model = $this->contract->model('spec_editor');
+        $worktree = $this->prepareWorktree('resolve-'.$label, 'spec_author');
+        $this->overlayFeature($worktree, $state->featureDir);
+        $reply = $this->invoke(
+            $worktree,
+            'spec_author',
+            $this->resolveQuestionsPrompt($questions),
+            $this->authorChat($model),
+            'resolve-'.$label,
+            1,
+            $model,
+        );
+        $this->rememberAuthor($reply->chatId, $model);
+        $this->sealWorktree($worktree, $state->featureDir);
+
+        try {
+            $this->assertCleanRole('spec_author', $state->featureDir, $worktree);
+        } catch (FactoryStop $stop) {
+            $this->git->discard($worktree);
+            $this->git->removeWorktree($worktree, 'factory/resolve-'.$label);
+            $this->stop($stop->reason, $stop->getMessage());
+        }
+
+        if (in_array($reply->status, ['resolved', 'adjust_tests'], true)) {
+            $this->keepDraft($worktree, 'factory/resolve-'.$label, 'resolve questions for '.$label);
+            $this->mirrorFeature($worktree, $state->featureDir);
+        } else {
+            $this->git->discard($worktree);
+        }
+
+        $this->git->removeWorktree($worktree, 'factory/resolve-'.$label);
+
+        return $reply;
+    }
+
+    private function resolveQuestionsPrompt(string $questions): string
+    {
+        return <<<PROMPT
+        RESOLVE_QUESTIONS
+        The implementer stopped with these questions:
+        {$questions}
+        Answer only from the feature description, the constitution, spec.md, and plan.md already in this worktree.
+        When those documents already state the choice, write that choice into spec.md and finish with status resolved.
+        When the feature test demands behavior the spec does not state, finish with status adjust_tests and leave spec.md unchanged.
+        When no document states the choice, finish with status spec_gap.
+        Do not invent a requirement. Do not edit plan.md or tasks.md. Do not run git.
+        The entire final message is one JSON object and nothing else:
+        {"status":"resolved","summary":"","files_changed":[],"assumptions":[]}
+        PROMPT;
     }
 
     /**
@@ -728,7 +1000,17 @@ final class Workflow
             ."\n\n".$this->contract->reviewModeInstructions()
             ."\n\n".$this->waveContext($wave)
             ."\n\nFeature tests for these tasks are already in the worktree. Write the production code and the unit tests. Do not run make verify. Do not commit."
+            ."\n".$this->implementerExits()
             .$feedbackBlock;
+    }
+
+    private function implementerExits(): string
+    {
+        $questions = $this->load()->featureDir.'/.factory/questions.md';
+
+        return "If you need a choice that the spec, plan, constitution, and feature description do not state, append the question to {$questions} and finish with status spec_gap.\n"
+            ."If the test cannot be implemented because of a framework or language limit, finish with status platform_limit, scope test or behavior, and a summary of the limit.\n"
+            .'Do not invent the missing requirement.';
     }
 
     private function implementFollowUp(): string
@@ -850,6 +1132,24 @@ final class Workflow
 
         if ($kind === 'assumptions') {
             return "The previous attempt was not approved because assumptions is not empty. Remove those assumptions, or stop with spec_gap when the spec must state the choice.\n\n".$this->encodeJson($feedback['assumptions'] ?? []);
+        }
+
+        if ($kind === 'spec_resolved') {
+            $summary = is_string($feedback['summary'] ?? null) ? $feedback['summary'] : '';
+
+            return "The spec now states the choice. Continue the implementation.\n\n".$summary;
+        }
+
+        if ($kind === 'adjust_tests') {
+            $summary = is_string($feedback['summary'] ?? null) ? $feedback['summary'] : '';
+
+            return "Change the feature test so it matches the spec. The spec does not state the extra behavior.\n\n".$summary;
+        }
+
+        if ($kind === 'platform_rejected') {
+            $summary = is_string($feedback['summary'] ?? null) ? $feedback['summary'] : '';
+
+            return "The platform limit does not hold. Implement the behavior the spec states.\n\n".$summary;
         }
 
         $reviewer = is_string($feedback['reviewer'] ?? null) ? $feedback['reviewer'] : 'reviewer';
@@ -1276,10 +1576,109 @@ final class Workflow
         throw new FactoryStop($reason, $detail);
     }
 
+    private function specPatch(): void
+    {
+        $state = $this->load();
+        $model = $this->contract->model('spec_editor');
+        $worktree = $this->prepareWorktree('spec-patch', 'spec_author');
+        $this->overlayFeature($worktree, $state->featureDir);
+        $reply = $this->invoke(
+            $worktree,
+            'spec_author',
+            $this->specPatchPrompt($state),
+            $this->authorChat($model),
+            'spec-patch',
+            1,
+            $model,
+        );
+        $this->rememberAuthor($reply->chatId, $model);
+        $this->sealWorktree($worktree, $state->featureDir);
+
+        try {
+            $this->assertCleanRole('spec_author', $state->featureDir, $worktree);
+        } catch (FactoryStop $stop) {
+            $this->git->discard($worktree);
+            $this->stop($stop->reason, $stop->getMessage());
+        }
+
+        $wave = TaskBoard::wave($this->board(), self::WAVE_LIMIT);
+        $label = $wave === [] ? '' : $this->waveLabel($wave);
+        if ($reply->status === 'replan') {
+            if ($label !== '') {
+                $this->clearFeedback($label);
+                $this->markAttemptTree($label, false);
+            }
+
+            $this->keepDraft($worktree, 'factory/spec-patch', 'spec patch requires a new plan');
+            $this->mirrorFeature($worktree, $state->featureDir);
+            $this->git->removeWorktree($worktree, 'factory/spec-patch');
+            $state = $this->load();
+            $state->next = 'plan';
+            $state->stop = null;
+            $this->save($state);
+
+            return;
+        }
+
+        if ($reply->status !== 'done') {
+            $this->git->discard($worktree);
+            $this->stop('unresolved_questions', 'Answer '.$state->featureDir.'/.factory/questions.md and run resume.');
+        }
+
+        $this->keepDraft($worktree, 'factory/spec-patch', 'patch spec from answered questions');
+        $this->mirrorFeature($worktree, $state->featureDir);
+        $this->git->removeWorktree($worktree, 'factory/spec-patch');
+        if ($label !== '') {
+            $summary = $reply->payload['summary'] ?? null;
+            $this->rememberFeedback($label, [
+                'kind' => 'spec_resolved',
+                'summary' => is_string($summary) && $summary !== '' ? $summary : $reply->text,
+            ]);
+        }
+
+        $state = $this->load();
+        $state->next = 'implement';
+        $state->stop = null;
+        $this->save($state);
+    }
+
+    private function specPatchPrompt(FactoryState $state): string
+    {
+        $questions = $this->read($this->root.'/'.$state->featureDir.'/.factory/questions.md');
+
+        return <<<PROMPT
+        SPEC_PATCH
+        Update spec.md for {$state->featureDir} from the answered questions.
+        Questions:
+        {$questions}
+        Write the answer into spec.md. Do not edit plan.md or tasks.md.
+        When the answer means the plan or the task breakdown must change, finish with status replan.
+        Otherwise finish with status done.
+        Do not invent a requirement beyond the answer. Do not run git.
+        The entire final message is one JSON object and nothing else:
+        {"status":"done","summary":"","files_changed":[],"assumptions":[]}
+        PROMPT;
+    }
+
     private function reopen(FactoryState $state): void
     {
         $reason = $state->stop['reason'] ?? '';
-        $resumeAt = $reason === 'unresolved_questions' ? 'clarify' : ($state->stop['resume_at'] ?? '');
+        $recorded = $state->stop['resume_at'] ?? '';
+        if ($reason === 'unresolved_questions' && $recorded === 'implement') {
+            foreach ($state->tasks as $id => $record) {
+                if ($record['status'] !== 'done') {
+                    $state->putTask($id, 0, 'pending', $record['chat_id'], $record['spec_hash']);
+                }
+            }
+
+            $state->next = 'spec_patch';
+            $state->stop = null;
+            $this->save($state);
+
+            return;
+        }
+
+        $resumeAt = $reason === 'unresolved_questions' ? 'clarify' : $recorded;
         if (! in_array($resumeAt, self::STEPS, true) || $resumeAt === 'done') {
             throw new FactoryStop($reason, $state->stop['detail'] ?? 'The factory is stopped.');
         }
@@ -1307,6 +1706,20 @@ final class Workflow
         $current = $state->task($taskId);
         $state->putTask($taskId, $attempts, 'retry', $chatId, $current['spec_hash'], $featureChatId ?? $current['feature_chat_id']);
         $this->save($state);
+    }
+
+    private function writeQuestions(string $featureDir, AgentReply $reply): void
+    {
+        $path = $this->root.'/'.$featureDir.'/.factory/questions.md';
+        $directory = dirname($path);
+        if (! is_dir($directory)) {
+            mkdir($directory, 0777, true);
+        }
+
+        $summary = $reply->payload['summary'] ?? null;
+        $body = is_string($summary) && $summary !== '' ? $summary : $reply->text;
+        $existing = $this->read($path);
+        file_put_contents($path, trim($existing."\n".$body)."\n");
     }
 
     private function ensureQuestions(string $worktree, FactoryState $state, AgentReply $reply): void

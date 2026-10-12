@@ -3,7 +3,7 @@
     "description": "Speckit factory orchestrator. The consumer keeps factory/factory.yaml and factory/prompts.",
     "type": "library",
     "license": "MIT",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "require": {
         "php": "^8.4",
         "symfony/process": "^7.4 || ^8.0",
