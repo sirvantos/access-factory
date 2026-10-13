@@ -25,6 +25,7 @@ final class FactoryState
         public ?string $authorChatId = null,
         public ?string $authorModel = null,
         public string $mode = 'full',
+        public string $driver = 'cursor',
     ) {}
 
     /**
@@ -48,6 +49,11 @@ final class FactoryState
             $mode = 'full';
         }
 
+        $driver = $data['driver'] ?? 'cursor';
+        if (! is_string($driver) || ! in_array($driver, ['cursor', 'claude'], true)) {
+            throw new RuntimeException('Factory state is unreadable.');
+        }
+
         return new self(
             $featureDir,
             $branch,
@@ -60,6 +66,7 @@ final class FactoryState
             is_string($authorChatId) && $authorChatId !== '' ? $authorChatId : null,
             is_string($authorModel) && $authorModel !== '' ? $authorModel : null,
             $mode,
+            $driver,
         );
     }
 
@@ -80,6 +87,7 @@ final class FactoryState
             'author_chat_id' => $this->authorChatId,
             'author_model' => $this->authorModel,
             'mode' => $this->mode,
+            'driver' => $this->driver,
         ];
     }
 

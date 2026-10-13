@@ -2,9 +2,11 @@
 
 declare(strict_types=1);
 
-use Access\Factory\AgentClient;
+use Access\Factory\AgentDriver;
 use Access\Factory\AgentReply;
+use Access\Factory\ClaudeDriver;
 use Access\Factory\Contract;
+use Access\Factory\CursorDriver;
 use Access\Factory\FactoryLog;
 use Access\Factory\FactoryState;
 use Access\Factory\FactoryStop;
@@ -706,7 +708,7 @@ it('resumes the author chat and uses the editor model from plan onward', functio
     $root = factoryRoot();
 
     try {
-        $agent = new class implements AgentClient
+        $agent = new class extends FactoryAgentStub
         {
             /** @var list<array{model: string, chat: string|null, prompt: string}> */
             public array $seen = [];
@@ -719,26 +721,26 @@ it('resumes the author chat and uses the editor model from plan onward', functio
                 $dir = 'specs/001-demo';
 
                 if (str_contains($prompt, 'ANALYZE_FIX')) {
-                    return AgentReply::fromStream('{"status":"done","summary":"repaired","assumptions":[],"session_id":"editor-chat"}');
+                    return factoryReply('{"status":"done","summary":"repaired","assumptions":[],"session_id":"editor-chat"}');
                 }
 
                 if (str_contains($prompt, 'IMPLEMENT_TASK')) {
                     file_put_contents($cwd.'/recorded.txt', "pass\n");
 
-                    return AgentReply::fromStream('{"status":"done","summary":"recorded","assumptions":[],"session_id":"impl"}');
+                    return factoryReply('{"status":"done","summary":"recorded","assumptions":[],"session_id":"impl"}');
                 }
 
                 if (str_contains($prompt, 'QUALITY_REVIEW') || str_contains($prompt, 'FUNCTIONAL_REVIEW')) {
-                    return AgentReply::fromStream('{"verdict":"approve","issues":[],"scenarios":[{"id":"1","result":"pass"}]}');
+                    return factoryReply('{"verdict":"approve","issues":[],"scenarios":[{"id":"1","result":"pass"}]}');
                 }
 
                 if (str_contains($prompt, 'speckit-analyze')) {
                     $this->analyzed++;
                     if ($this->analyzed === 1) {
-                        return AgentReply::fromStream('{"verdict":"changes_requested","issues":[{"severity":"medium","rule":"constitution:IV","problem":"split the assertion","fix":"move it"}],"assumptions":[]}');
+                        return factoryReply('{"verdict":"changes_requested","issues":[{"severity":"medium","rule":"constitution:IV","problem":"split the assertion","fix":"move it"}],"assumptions":[]}');
                     }
 
-                    return AgentReply::fromStream('{"verdict":"approve","issues":[],"assumptions":[]}');
+                    return factoryReply('{"verdict":"approve","issues":[],"assumptions":[]}');
                 }
 
                 if (str_contains($prompt, 'speckit-specify')) {
@@ -757,7 +759,7 @@ it('resumes the author chat and uses the editor model from plan onward', functio
                     ? 'editor-chat'
                     : 'opus-chat';
 
-                return AgentReply::fromStream('{"status":"done","summary":"ok","assumptions":[],"session_id":"'.$session.'"}');
+                return factoryReply('{"status":"done","summary":"ok","assumptions":[],"session_id":"'.$session.'"}');
             }
         };
 
@@ -792,7 +794,7 @@ it('runs feature tests and coding on different models', function () {
     $root = factoryRoot();
 
     try {
-        $agent = new class implements AgentClient
+        $agent = new class extends FactoryAgentStub
         {
             /** @var list<array{model: string, prompt: string}> */
             public array $seen = [];
@@ -819,10 +821,10 @@ it('runs feature tests and coding on different models', function () {
                 }
 
                 if (str_contains($prompt, 'QUALITY_REVIEW') || str_contains($prompt, 'FUNCTIONAL_REVIEW') || str_contains($prompt, 'speckit-analyze')) {
-                    return AgentReply::fromStream('{"verdict":"approve","issues":[],"assumptions":[],"scenarios":[{"id":"1","result":"pass"}]}');
+                    return factoryReply('{"verdict":"approve","issues":[],"assumptions":[],"scenarios":[{"id":"1","result":"pass"}]}');
                 }
 
-                return AgentReply::fromStream('{"status":"done","summary":"ok","assumptions":[]}');
+                return factoryReply('{"status":"done","summary":"ok","assumptions":[]}');
             }
         };
 
@@ -2178,7 +2180,179 @@ it('stops when a platform limit removes the behavior and resumes on the same wav
     }
 });
 
-function factoryWorkflow(string $root, AgentClient $agent, ?FeatureScaffolder $scaffolder = null, int $retries = 0, string $verify = 'true', string $reviewMode = 'strict', string $mode = 'full', ?FactoryLog $log = null): Workflow
+it('vets only the live driver sandbox file', function () {
+    $root = factoryRoot();
+
+    try {
+        $cursor = factoryWorkflow($root, new CursorDriver(30))->vet();
+        $claude = factoryWorkflow($root, new ClaudeDriver(30))->vet();
+
+        expect($cursor)->not->toContain('.cursor/cli.json needs permissions.allow.')
+            ->and($cursor)->not->toContain('.claude/settings.json needs permissions.allow.')
+            ->and($claude)->toContain('.claude/settings.json needs permissions.allow.')
+            ->and($claude)->not->toContain('.cursor/cli.json needs permissions.allow.');
+
+        file_put_contents($root.'/.cursor/cli.json', '{');
+
+        expect(factoryWorkflow($root, new CursorDriver(30))->vet())
+            ->toContain('.cursor/cli.json needs permissions.allow.');
+    } finally {
+        factoryRemove($root);
+    }
+});
+
+it('writes the driver sandbox into the worktree', function () {
+    $root = factoryRoot();
+
+    try {
+        $agent = new class extends FactoryAgentStub
+        {
+            public ?array $written = null;
+
+            public function sandboxPath(): string
+            {
+                return '.claude/settings.json';
+            }
+
+            public function sandboxConfig(string $role): array
+            {
+                return [
+                    'permissions' => [
+                        'allow' => [],
+                        'deny' => ['Edit(.claude/**)'],
+                    ],
+                ];
+            }
+
+            public function run(string $cwd, string $model, string $prompt, ?string $chatId): AgentReply
+            {
+                $settings = $cwd.'/.claude/settings.json';
+                if (is_file($settings)) {
+                    $decoded = json_decode((string) file_get_contents($settings), true);
+                    $this->written = is_array($decoded) ? $decoded : [];
+                }
+
+                return factoryReply(factoryScriptedGatePassReply($cwd, $prompt));
+            }
+        };
+        factoryWorkflow($root, $agent)->start('Record a gate pass');
+
+        expect($agent->written['permissions']['deny'] ?? null)->toBe(['Edit(.claude/**)']);
+    } finally {
+        factoryRemove($root);
+    }
+});
+
+it('points the specify prompt at cursor skills and a protected claude tree', function () {
+    $root = factoryRoot();
+
+    try {
+        $prompts = [];
+        $agent = factoryAgent(function (string $cwd, string $prompt) use (&$prompts): string {
+            $prompts[] = $prompt;
+
+            return factoryScriptedGatePassReply($cwd, $prompt);
+        });
+        factoryWorkflow($root, $agent)->start('Record a gate pass');
+
+        expect($prompts[0])->toContain('.cursor/skills/speckit-specify/SKILL.md')
+            ->and($prompts[0])->toContain('.claude/');
+    } finally {
+        factoryRemove($root);
+    }
+});
+
+it('stores the live driver when a run starts', function () {
+    $root = factoryRoot();
+
+    try {
+        factoryWorkflow($root, factoryAgent(
+            fn (string $cwd, string $prompt): string => factoryScriptedGatePassReply($cwd, $prompt),
+            'claude',
+        ))->start('Record a gate pass');
+
+        $decoded = json_decode((string) file_get_contents($root.'/specs/001-demo/.factory/state.json'), true);
+
+        expect(is_array($decoded) ? ($decoded['driver'] ?? null) : null)->toBe('claude');
+    } finally {
+        factoryRemove($root);
+    }
+});
+
+it('stops resume when the stored driver differs and still reports status', function () {
+    $root = factoryRoot();
+
+    try {
+        $dir = 'specs/001-demo';
+        mkdir($root.'/'.$dir.'/.factory', 0777, true);
+        file_put_contents($root.'/.specify/feature.json', json_encode(['feature_directory' => $dir]));
+        $state = FactoryState::fromArray([
+            'feature_dir' => $dir,
+            'branch' => '001-demo',
+            'description' => 'Record a gate pass',
+            'next' => 'specify',
+            'driver' => 'cursor',
+        ]);
+        file_put_contents($root.'/'.$dir.'/.factory/state.json', json_encode($state->toArray())."\n");
+        $calls = 0;
+        $workflow = factoryWorkflow($root, factoryAgent(function () use (&$calls): string {
+            $calls++;
+
+            return '{"status":"done","summary":"ok","assumptions":[]}';
+        }, 'claude'));
+
+        expect($workflow->statusText())->toBe('specs/001-demo specify');
+        expect($workflow->staleIds())->toBe([]);
+        $workflow->unlock();
+
+        expect(fn () => $workflow->resume())->toThrow(FactoryStop::class, 'driver_mismatch');
+        expect($calls)->toBe(0);
+    } finally {
+        factoryRemove($root);
+    }
+});
+
+it('does not reopen a stopped run when the stored driver differs', function () {
+    $root = factoryRoot();
+
+    try {
+        $dir = 'specs/001-demo';
+        mkdir($root.'/'.$dir.'/.factory', 0777, true);
+        file_put_contents($root.'/.specify/feature.json', json_encode(['feature_directory' => $dir]));
+        $stop = [
+            'reason' => 'agent_failed',
+            'detail' => 'claude broke',
+            'resume_at' => 'specify',
+        ];
+        $state = FactoryState::fromArray([
+            'feature_dir' => $dir,
+            'branch' => '001-demo',
+            'description' => 'Record a gate pass',
+            'next' => 'stopped',
+            'stop' => $stop,
+            'driver' => 'cursor',
+        ]);
+        $statePath = $root.'/'.$dir.'/.factory/state.json';
+        file_put_contents($statePath, json_encode($state->toArray())."\n");
+        $calls = 0;
+        $workflow = factoryWorkflow($root, factoryAgent(function () use (&$calls): string {
+            $calls++;
+
+            return '{"status":"done","summary":"ok","assumptions":[]}';
+        }, 'claude'));
+
+        expect(fn () => $workflow->resume())->toThrow(FactoryStop::class, 'driver_mismatch');
+        expect($calls)->toBe(0);
+
+        $decoded = json_decode((string) file_get_contents($statePath), true);
+        expect(is_array($decoded) ? ($decoded['next'] ?? null) : null)->toBe('stopped')
+            ->and(is_array($decoded) ? ($decoded['stop'] ?? null) : null)->toBe($stop);
+    } finally {
+        factoryRemove($root);
+    }
+});
+
+function factoryWorkflow(string $root, AgentDriver $agent, ?FeatureScaffolder $scaffolder = null, int $retries = 0, string $verify = 'true', string $reviewMode = 'strict', string $mode = 'full', ?FactoryLog $log = null): Workflow
 {
     return new Workflow(
         $root,
@@ -2233,17 +2407,107 @@ function factoryResultStream(string $payload): string
     return is_string($encoded) ? $encoded : $payload;
 }
 
-function factoryAgent(Closure $reply): AgentClient
+function factoryScriptedGatePassReply(string $cwd, string $prompt): string
 {
-    return new class($reply) implements AgentClient
+    $dir = 'specs/001-demo';
+    if (str_contains($prompt, 'IMPLEMENT_TASK')) {
+        file_put_contents($cwd.'/recorded.txt', "pass\n");
+
+        return '{"status":"done","summary":"ok","assumptions":[]}';
+    }
+
+    if (str_contains($prompt, 'QUALITY_REVIEW') || str_contains($prompt, 'FUNCTIONAL_REVIEW') || str_contains($prompt, 'speckit-analyze')) {
+        return '{"verdict":"approve","issues":[],"scenarios":[{"id":"1","result":"pass"}],"assumptions":[]}';
+    }
+
+    if (str_contains($prompt, 'speckit-specify')) {
+        file_put_contents($cwd.'/'.$dir.'/spec.md', "User Story 1\n\nA pass.\n");
+    }
+
+    if (str_contains($prompt, 'speckit-plan')) {
+        file_put_contents($cwd.'/'.$dir.'/plan.md', "plan\n");
+    }
+
+    if (str_contains($prompt, 'speckit-tasks')) {
+        file_put_contents($cwd.'/'.$dir.'/tasks.md', "## Phase 1\n\n- [ ] T001 Record\n");
+    }
+
+    return '{"status":"done","summary":"ok","assumptions":[]}';
+}
+
+function factoryReply(string $json): AgentReply
+{
+    $driver = new CursorDriver(30);
+    $reply = $driver->parse($json);
+    if ($reply->status !== 'unknown') {
+        return $reply;
+    }
+
+    $payload = json_decode($json, true);
+    $chatId = is_array($payload) ? ($payload['session_id'] ?? null) : null;
+
+    return AgentReply::fromContractText($json, is_string($chatId) && $chatId !== '' ? $chatId : null);
+}
+
+function factoryAgent(Closure $reply, string $driverName = 'cursor'): AgentDriver
+{
+    return new class($reply, $driverName) extends FactoryAgentStub
     {
-        public function __construct(private Closure $reply) {}
+        public function __construct(private Closure $reply, string $driverName = 'cursor')
+        {
+            parent::__construct($driverName);
+        }
 
         public function run(string $cwd, string $model, string $prompt, ?string $chatId): AgentReply
         {
-            return AgentReply::fromStream(($this->reply)($cwd, $prompt));
+            return factoryReply(($this->reply)($cwd, $prompt));
         }
     };
+}
+
+class FactoryAgentStub implements AgentDriver
+{
+    public function __construct(public string $driverName = 'cursor') {}
+
+    public function name(): string
+    {
+        return $this->driverName;
+    }
+
+    public function sandboxPath(): string
+    {
+        return '.cursor/cli.json';
+    }
+
+    public function sandboxConfig(string $role): array
+    {
+        return [
+            'permissions' => [
+                'allow' => [],
+                'deny' => [],
+            ],
+        ];
+    }
+
+    public function command(string $cwd, string $model, string $prompt, ?string $chatId): array
+    {
+        return [];
+    }
+
+    public function parse(string $stream): AgentReply
+    {
+        return factoryReply($stream);
+    }
+
+    public function outcome(int $exitCode, string $stdout, string $stderr): AgentReply
+    {
+        return $this->parse($stdout);
+    }
+
+    public function run(string $cwd, string $model, string $prompt, ?string $chatId): AgentReply
+    {
+        return factoryReply('{"status":"done","summary":"ok","assumptions":[]}');
+    }
 }
 
 function factoryRemove(string $root): void

@@ -18,3 +18,17 @@ it('gives an agent eighty minutes', function () {
         $process->run();
     }
 });
+
+it('defaults a missing driver to cursor', function () {
+    expect((new Contract([]))->driver())->toBe('cursor');
+});
+
+it('accepts cursor and claude', function () {
+    expect((new Contract(['driver' => 'cursor']))->driver())->toBe('cursor')
+        ->and((new Contract(['driver' => 'claude']))->driver())->toBe('claude');
+});
+
+it('rejects an unknown driver', function () {
+    expect(fn () => (new Contract(['driver' => 'codex']))->driver())
+        ->toThrow(RuntimeException::class, 'driver must be cursor or claude.');
+});

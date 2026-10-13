@@ -64,6 +64,20 @@ final class Contract
         return is_int($timeout) ? $timeout : 4800;
     }
 
+    public function driver(): string
+    {
+        if (! array_key_exists('driver', $this->data)) {
+            return 'cursor';
+        }
+
+        $driver = $this->data['driver'];
+        if ($driver === 'cursor' || $driver === 'claude') {
+            return $driver;
+        }
+
+        throw new RuntimeException('driver must be cursor or claude.');
+    }
+
     /**
      * Implement review strictness: strict | balanced | soft.
      */
@@ -191,46 +205,5 @@ final class Contract
         }
 
         return 'full';
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    public function cliConfig(string $role): array
-    {
-        $deny = [
-            'Write(.specify/**)',
-            'Write(.cursor/**)',
-            'Write(factory/**)',
-            'Write(.github/**)',
-            'Write(.gitlab-ci.yml)',
-            'Write(.gitlab/**)',
-            'Write(Makefile)',
-            'Write(phpstan.neon)',
-            'Write(deptrac.php)',
-            'Write(phpunit.xml)',
-        ];
-
-        if ($role === 'implementer' || $role === 'feature_tester') {
-            array_push(
-                $deny,
-                'Write(specs/**/spec.md)',
-                'Write(specs/**/plan.md)',
-                'Write(specs/**/tasks.md)',
-                'Write(specs/**/research.md)',
-                'Write(specs/**/data-model.md)',
-                'Write(specs/**/quickstart.md)',
-                'Write(specs/**/constraints.md)',
-                'Write(specs/**/contracts/**)',
-                'Write(specs/**/checklists/**)',
-            );
-        }
-
-        return [
-            'permissions' => [
-                'allow' => [],
-                'deny' => $deny,
-            ],
-        ];
     }
 }

@@ -34,35 +34,9 @@ final class AgentReply
         public array $payload,
     ) {}
 
-    public static function fromStream(string $stream): self
+    public static function fromContractText(string $text, ?string $chatId): self
     {
-        $text = '';
-        $chatId = null;
-
-        foreach (preg_split("/\r\n|\n|\r/", $stream) ?: [] as $line) {
-            $line = trim($line);
-            if ($line === '' || ! str_starts_with($line, '{')) {
-                $text .= $line."\n";
-
-                continue;
-            }
-
-            $event = json_decode($line, true);
-            if (! is_array($event)) {
-                $text .= $line."\n";
-
-                continue;
-            }
-
-            $chatId ??= self::chatId($event);
-            $rendered = self::eventText($event);
-            if ($rendered !== '') {
-                $text .= $rendered;
-            } elseif (isset($event['status']) || isset($event['verdict'])) {
-                $text .= $line."\n";
-            }
-        }
-
+        $text = trim($text);
         $payload = self::lastPayload($text);
         $status = 'unknown';
         if (isset($payload['status']) && is_string($payload['status'])) {
@@ -71,7 +45,7 @@ final class AgentReply
             $status = $payload['verdict'];
         }
 
-        return new self($status, trim($text), $chatId, $payload);
+        return new self($status, $text, $chatId !== '' ? $chatId : null, $payload);
     }
 
     public function blocksApproval(): bool
@@ -321,44 +295,5 @@ final class AgentReply
         }
 
         return $payload;
-    }
-
-    /**
-     * @param  array<mixed>  $event
-     */
-    private static function chatId(array $event): ?string
-    {
-        foreach (['session_id', 'sessionId', 'chat_id', 'chatId'] as $key) {
-            $value = $event[$key] ?? null;
-            if (is_string($value) && $value !== '') {
-                return $value;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * @param  array<mixed>  $event
-     */
-    private static function eventText(array $event): string
-    {
-        if (isset($event['result']) && is_string($event['result'])) {
-            return $event['result']."\n";
-        }
-
-        $content = $event['message']['content'] ?? null;
-        if (! is_array($content)) {
-            return '';
-        }
-
-        $text = '';
-        foreach ($content as $part) {
-            if (is_array($part) && isset($part['text']) && is_string($part['text'])) {
-                $text .= $part['text'];
-            }
-        }
-
-        return $text === '' ? '' : $text."\n";
     }
 }
