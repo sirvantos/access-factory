@@ -2226,33 +2226,13 @@ it('writes the driver sandbox into the worktree', function () {
 
             public function run(string $cwd, string $model, string $prompt, ?string $chatId): AgentReply
             {
-                $decoded = json_decode((string) file_get_contents($cwd.'/.claude/settings.json'), true);
-                $this->written = is_array($decoded) ? $decoded : [];
-
-                $dir = 'specs/001-demo';
-                if (str_contains($prompt, 'IMPLEMENT_TASK')) {
-                    file_put_contents($cwd.'/recorded.txt', "pass\n");
-
-                    return factoryReply('{"status":"done","summary":"ok","assumptions":[]}');
+                $settings = $cwd.'/.claude/settings.json';
+                if (is_file($settings)) {
+                    $decoded = json_decode((string) file_get_contents($settings), true);
+                    $this->written = is_array($decoded) ? $decoded : [];
                 }
 
-                if (str_contains($prompt, 'QUALITY_REVIEW') || str_contains($prompt, 'FUNCTIONAL_REVIEW') || str_contains($prompt, 'speckit-analyze')) {
-                    return factoryReply('{"verdict":"approve","issues":[],"scenarios":[{"id":"1","result":"pass"}],"assumptions":[]}');
-                }
-
-                if (str_contains($prompt, 'speckit-specify')) {
-                    file_put_contents($cwd.'/'.$dir.'/spec.md', "User Story 1\n\nA pass.\n");
-                }
-
-                if (str_contains($prompt, 'speckit-plan')) {
-                    file_put_contents($cwd.'/'.$dir.'/plan.md', "plan\n");
-                }
-
-                if (str_contains($prompt, 'speckit-tasks')) {
-                    file_put_contents($cwd.'/'.$dir.'/tasks.md', "## Phase 1\n\n- [ ] T001 Record\n");
-                }
-
-                return factoryReply('{"status":"done","summary":"ok","assumptions":[]}');
+                return factoryReply(factoryScriptedGatePassReply($cwd, $prompt));
             }
         };
         factoryWorkflow($root, $agent)->start('Record a gate pass');
@@ -2271,30 +2251,7 @@ it('points the specify prompt at cursor skills and a protected claude tree', fun
         $agent = factoryAgent(function (string $cwd, string $prompt) use (&$prompts): string {
             $prompts[] = $prompt;
 
-            $dir = 'specs/001-demo';
-            if (str_contains($prompt, 'IMPLEMENT_TASK')) {
-                file_put_contents($cwd.'/recorded.txt', "pass\n");
-
-                return '{"status":"done","summary":"ok","assumptions":[]}';
-            }
-
-            if (str_contains($prompt, 'QUALITY_REVIEW') || str_contains($prompt, 'FUNCTIONAL_REVIEW') || str_contains($prompt, 'speckit-analyze')) {
-                return '{"verdict":"approve","issues":[],"scenarios":[{"id":"1","result":"pass"}],"assumptions":[]}';
-            }
-
-            if (str_contains($prompt, 'speckit-specify')) {
-                file_put_contents($cwd.'/'.$dir.'/spec.md', "User Story 1\n\nA pass.\n");
-            }
-
-            if (str_contains($prompt, 'speckit-plan')) {
-                file_put_contents($cwd.'/'.$dir.'/plan.md', "plan\n");
-            }
-
-            if (str_contains($prompt, 'speckit-tasks')) {
-                file_put_contents($cwd.'/'.$dir.'/tasks.md', "## Phase 1\n\n- [ ] T001 Record\n");
-            }
-
-            return '{"status":"done","summary":"ok","assumptions":[]}';
+            return factoryScriptedGatePassReply($cwd, $prompt);
         });
         factoryWorkflow($root, $agent)->start('Record a gate pass');
 
@@ -2358,6 +2315,34 @@ function factoryResultStream(string $payload): string
     ]);
 
     return is_string($encoded) ? $encoded : $payload;
+}
+
+function factoryScriptedGatePassReply(string $cwd, string $prompt): string
+{
+    $dir = 'specs/001-demo';
+    if (str_contains($prompt, 'IMPLEMENT_TASK')) {
+        file_put_contents($cwd.'/recorded.txt', "pass\n");
+
+        return '{"status":"done","summary":"ok","assumptions":[]}';
+    }
+
+    if (str_contains($prompt, 'QUALITY_REVIEW') || str_contains($prompt, 'FUNCTIONAL_REVIEW') || str_contains($prompt, 'speckit-analyze')) {
+        return '{"verdict":"approve","issues":[],"scenarios":[{"id":"1","result":"pass"}],"assumptions":[]}';
+    }
+
+    if (str_contains($prompt, 'speckit-specify')) {
+        file_put_contents($cwd.'/'.$dir.'/spec.md', "User Story 1\n\nA pass.\n");
+    }
+
+    if (str_contains($prompt, 'speckit-plan')) {
+        file_put_contents($cwd.'/'.$dir.'/plan.md', "plan\n");
+    }
+
+    if (str_contains($prompt, 'speckit-tasks')) {
+        file_put_contents($cwd.'/'.$dir.'/tasks.md', "## Phase 1\n\n- [ ] T001 Record\n");
+    }
+
+    return '{"status":"done","summary":"ok","assumptions":[]}';
 }
 
 function factoryReply(string $json): AgentReply

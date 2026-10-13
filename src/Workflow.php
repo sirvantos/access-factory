@@ -150,7 +150,9 @@ final class Workflow
         }
 
         $sandbox = $this->agent->sandboxPath();
-        $cli = json_decode((string) file_get_contents($this->root.'/'.$sandbox), true);
+        $sandboxFile = $this->root.'/'.$sandbox;
+        $raw = is_file($sandboxFile) ? file_get_contents($sandboxFile) : false;
+        $cli = json_decode(is_string($raw) ? $raw : '', true);
         if (! is_array($cli) || ! is_array($cli['permissions']['allow'] ?? null)) {
             $problems[] = $sandbox.' needs permissions.allow.';
         }

@@ -3,7 +3,6 @@
 declare(strict_types=1);
 
 use Access\Factory\Contract;
-use RuntimeException;
 use Symfony\Component\Process\Process;
 
 it('gives an agent eighty minutes', function () {
