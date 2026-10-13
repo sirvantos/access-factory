@@ -20,4 +20,5 @@ it('keeps each role inside its write set', function (string $role, string $path,
     ['reviewer', 'app/Models/Pass.php', false],
     ['converge', 'specs/001-demo/tasks.md', true],
     ['converge', 'specs/001-demo/spec.md', false],
+    ['spec_author', '.claude/settings.json', false],
 ]);

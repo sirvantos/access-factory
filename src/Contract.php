@@ -206,20 +206,4 @@ final class Contract
 
         return 'full';
     }
-
-    /**
-     * @return array<string, mixed>
-     */
-    public function cliConfig(string $role): array
-    {
-        return [
-            'permissions' => [
-                'allow' => [],
-                'deny' => array_map(
-                    static fn (string $path): string => 'Write('.$path.')',
-                    SandboxPaths::forRole($role),
-                ),
-            ],
-        ];
-    }
 }

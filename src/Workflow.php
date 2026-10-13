@@ -20,7 +20,7 @@ final class Workflow
         private string $root,
         private Contract $contract,
         private GitRepo $git,
-        private AgentClient $agent,
+        private AgentDriver $agent,
         private FeatureScaffolder $scaffolder,
         private ?FactoryLog $log = null,
     ) {}
@@ -149,9 +149,10 @@ final class Workflow
             }
         }
 
-        $cli = json_decode((string) file_get_contents($this->root.'/.cursor/cli.json'), true);
+        $sandbox = $this->agent->sandboxPath();
+        $cli = json_decode((string) file_get_contents($this->root.'/'.$sandbox), true);
         if (! is_array($cli) || ! is_array($cli['permissions']['allow'] ?? null)) {
-            $problems[] = '.cursor/cli.json needs permissions.allow.';
+            $problems[] = $sandbox.' needs permissions.allow.';
         }
 
         $tasks = $this->root.'/'.$this->featureDir().'/tasks.md';
@@ -1340,7 +1341,7 @@ final class Workflow
         return <<<PROMPT
         Follow .cursor/skills/{$skill}/SKILL.md for {$state->featureDir}.
         The feature directory and branch already exist. Do not run git. Do not run Speckit git hooks.
-        Do not create, edit, delete, or rename files under factory/, .cursor/, .specify/, .github/, Makefile, phpstan.neon, deptrac.php, or phpunit.xml.
+        Do not create, edit, delete, or rename files under factory/, .cursor/, .claude/, .specify/, .github/, Makefile, phpstan.neon, deptrac.php, or phpunit.xml.
         Feature description: {$state->description}
         If you need a human answer, append the question to {$questions} and finish with status spec_gap.
         Do not invent missing requirements.
@@ -1425,7 +1426,7 @@ final class Workflow
         $this->git->linkDependencies($path);
         $this->copyFeaturePointer($path);
         $roleName = $role === 'converge' ? 'converge' : $role;
-        $this->git->writeJson($path.'/.cursor/cli.json', $this->contract->cliConfig($roleName));
+        $this->git->writeJson($path.'/'.$this->agent->sandboxPath(), $this->agent->sandboxConfig($roleName));
 
         return $path;
     }
@@ -1447,7 +1448,7 @@ final class Workflow
 
     private function sealWorktree(string $worktree, string $featureDir): void
     {
-        $this->git->restore($worktree, '.cursor/cli.json');
+        $this->git->restore($worktree, $this->agent->sandboxPath());
         $stateFile = $featureDir.'/.factory/state.json';
         if (is_file($worktree.'/'.$stateFile)) {
             $this->git->restore($worktree, $stateFile);

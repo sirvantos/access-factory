@@ -76,7 +76,7 @@ final class DiffGuard
 
     private static function isAlwaysProtected(string $path): bool
     {
-        $trees = ['.specify', 'factory', '.cursor', '.github', '.gitlab'];
+        $trees = ['.specify', 'factory', '.cursor', '.claude', '.github', '.gitlab'];
         foreach ($trees as $tree) {
             if (self::under($path, $tree)) {
                 return true;
