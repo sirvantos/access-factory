@@ -65,6 +65,7 @@ final class Workflow
             null,
             null,
             $mode,
+            $this->agent->name(),
         ));
 
         $this->continueRun();
@@ -171,6 +172,14 @@ final class Workflow
 
     private function continueRun(): void
     {
+        $state = $this->load();
+        if ($state->driver !== $this->agent->name()) {
+            throw new FactoryStop(
+                'driver_mismatch',
+                'driver_mismatch: this run uses '.$state->driver.' and the current driver is '.$this->agent->name().'.',
+            );
+        }
+
         $this->acquireLock();
 
         try {

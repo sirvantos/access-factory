@@ -2262,6 +2262,56 @@ it('points the specify prompt at cursor skills and a protected claude tree', fun
     }
 });
 
+it('stores the live driver when a run starts', function () {
+    $root = factoryRoot();
+
+    try {
+        factoryWorkflow($root, factoryAgent(
+            fn (string $cwd, string $prompt): string => factoryScriptedGatePassReply($cwd, $prompt),
+            'claude',
+        ))->start('Record a gate pass');
+
+        $decoded = json_decode((string) file_get_contents($root.'/specs/001-demo/.factory/state.json'), true);
+
+        expect(is_array($decoded) ? ($decoded['driver'] ?? null) : null)->toBe('claude');
+    } finally {
+        factoryRemove($root);
+    }
+});
+
+it('stops resume when the stored driver differs and still reports status', function () {
+    $root = factoryRoot();
+
+    try {
+        $dir = 'specs/001-demo';
+        mkdir($root.'/'.$dir.'/.factory', 0777, true);
+        file_put_contents($root.'/.specify/feature.json', json_encode(['feature_directory' => $dir]));
+        $state = FactoryState::fromArray([
+            'feature_dir' => $dir,
+            'branch' => '001-demo',
+            'description' => 'Record a gate pass',
+            'next' => 'specify',
+            'driver' => 'cursor',
+        ]);
+        file_put_contents($root.'/'.$dir.'/.factory/state.json', json_encode($state->toArray())."\n");
+        $calls = 0;
+        $workflow = factoryWorkflow($root, factoryAgent(function () use (&$calls): string {
+            $calls++;
+
+            return '{"status":"done","summary":"ok","assumptions":[]}';
+        }, 'claude'));
+
+        expect($workflow->statusText())->toBe('specs/001-demo specify');
+        expect($workflow->staleIds())->toBe([]);
+        $workflow->unlock();
+
+        expect(fn () => $workflow->resume())->toThrow(FactoryStop::class, 'driver_mismatch');
+        expect($calls)->toBe(0);
+    } finally {
+        factoryRemove($root);
+    }
+});
+
 function factoryWorkflow(string $root, AgentDriver $agent, ?FeatureScaffolder $scaffolder = null, int $retries = 0, string $verify = 'true', string $reviewMode = 'strict', string $mode = 'full', ?FactoryLog $log = null): Workflow
 {
     return new Workflow(
