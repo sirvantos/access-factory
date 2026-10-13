@@ -3,6 +3,7 @@
 
 declare(strict_types=1);
 
+use Access\Factory\ClaudeDriver;
 use Access\Factory\Contract;
 use Access\Factory\CursorDriver;
 use Access\Factory\FactoryLog;
@@ -50,11 +51,17 @@ if (in_array($command, ['run', 'resume'], true)) {
 }
 $contract = Contract::load($root);
 
+$driver = match ($contract->driver()) {
+    'cursor' => new CursorDriver($contract->agentTimeout(), $log),
+    'claude' => new ClaudeDriver($contract->agentTimeout(), $log),
+    default => throw new RuntimeException('driver must be cursor or claude.'),
+};
+
 $workflow = new Workflow(
     $root,
     $contract,
     new GitRepo($root),
-    new CursorDriver($contract->agentTimeout(), $log),
+    $driver,
     new ScriptFeatureScaffolder,
     $log,
 );
