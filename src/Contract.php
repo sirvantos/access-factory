@@ -64,6 +64,20 @@ final class Contract
         return is_int($timeout) ? $timeout : 4800;
     }
 
+    public function driver(): string
+    {
+        if (! array_key_exists('driver', $this->data)) {
+            return 'cursor';
+        }
+
+        $driver = $this->data['driver'];
+        if ($driver === 'cursor' || $driver === 'claude') {
+            return $driver;
+        }
+
+        throw new RuntimeException('driver must be cursor or claude.');
+    }
+
     /**
      * Implement review strictness: strict | balanced | soft.
      */
