@@ -212,38 +212,13 @@ final class Contract
      */
     public function cliConfig(string $role): array
     {
-        $deny = [
-            'Write(.specify/**)',
-            'Write(.cursor/**)',
-            'Write(factory/**)',
-            'Write(.github/**)',
-            'Write(.gitlab-ci.yml)',
-            'Write(.gitlab/**)',
-            'Write(Makefile)',
-            'Write(phpstan.neon)',
-            'Write(deptrac.php)',
-            'Write(phpunit.xml)',
-        ];
-
-        if ($role === 'implementer' || $role === 'feature_tester') {
-            array_push(
-                $deny,
-                'Write(specs/**/spec.md)',
-                'Write(specs/**/plan.md)',
-                'Write(specs/**/tasks.md)',
-                'Write(specs/**/research.md)',
-                'Write(specs/**/data-model.md)',
-                'Write(specs/**/quickstart.md)',
-                'Write(specs/**/constraints.md)',
-                'Write(specs/**/contracts/**)',
-                'Write(specs/**/checklists/**)',
-            );
-        }
-
         return [
             'permissions' => [
                 'allow' => [],
-                'deny' => $deny,
+                'deny' => array_map(
+                    static fn (string $path): string => 'Write('.$path.')',
+                    SandboxPaths::forRole($role),
+                ),
             ],
         ];
     }

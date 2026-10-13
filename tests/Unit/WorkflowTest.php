@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Access\Factory\AgentClient;
 use Access\Factory\AgentReply;
 use Access\Factory\Contract;
+use Access\Factory\CursorDriver;
 use Access\Factory\FactoryLog;
 use Access\Factory\FactoryState;
 use Access\Factory\FactoryStop;
@@ -719,26 +720,26 @@ it('resumes the author chat and uses the editor model from plan onward', functio
                 $dir = 'specs/001-demo';
 
                 if (str_contains($prompt, 'ANALYZE_FIX')) {
-                    return AgentReply::fromStream('{"status":"done","summary":"repaired","assumptions":[],"session_id":"editor-chat"}');
+                    return factoryReply('{"status":"done","summary":"repaired","assumptions":[],"session_id":"editor-chat"}');
                 }
 
                 if (str_contains($prompt, 'IMPLEMENT_TASK')) {
                     file_put_contents($cwd.'/recorded.txt', "pass\n");
 
-                    return AgentReply::fromStream('{"status":"done","summary":"recorded","assumptions":[],"session_id":"impl"}');
+                    return factoryReply('{"status":"done","summary":"recorded","assumptions":[],"session_id":"impl"}');
                 }
 
                 if (str_contains($prompt, 'QUALITY_REVIEW') || str_contains($prompt, 'FUNCTIONAL_REVIEW')) {
-                    return AgentReply::fromStream('{"verdict":"approve","issues":[],"scenarios":[{"id":"1","result":"pass"}]}');
+                    return factoryReply('{"verdict":"approve","issues":[],"scenarios":[{"id":"1","result":"pass"}]}');
                 }
 
                 if (str_contains($prompt, 'speckit-analyze')) {
                     $this->analyzed++;
                     if ($this->analyzed === 1) {
-                        return AgentReply::fromStream('{"verdict":"changes_requested","issues":[{"severity":"medium","rule":"constitution:IV","problem":"split the assertion","fix":"move it"}],"assumptions":[]}');
+                        return factoryReply('{"verdict":"changes_requested","issues":[{"severity":"medium","rule":"constitution:IV","problem":"split the assertion","fix":"move it"}],"assumptions":[]}');
                     }
 
-                    return AgentReply::fromStream('{"verdict":"approve","issues":[],"assumptions":[]}');
+                    return factoryReply('{"verdict":"approve","issues":[],"assumptions":[]}');
                 }
 
                 if (str_contains($prompt, 'speckit-specify')) {
@@ -757,7 +758,7 @@ it('resumes the author chat and uses the editor model from plan onward', functio
                     ? 'editor-chat'
                     : 'opus-chat';
 
-                return AgentReply::fromStream('{"status":"done","summary":"ok","assumptions":[],"session_id":"'.$session.'"}');
+                return factoryReply('{"status":"done","summary":"ok","assumptions":[],"session_id":"'.$session.'"}');
             }
         };
 
@@ -819,10 +820,10 @@ it('runs feature tests and coding on different models', function () {
                 }
 
                 if (str_contains($prompt, 'QUALITY_REVIEW') || str_contains($prompt, 'FUNCTIONAL_REVIEW') || str_contains($prompt, 'speckit-analyze')) {
-                    return AgentReply::fromStream('{"verdict":"approve","issues":[],"assumptions":[],"scenarios":[{"id":"1","result":"pass"}]}');
+                    return factoryReply('{"verdict":"approve","issues":[],"assumptions":[],"scenarios":[{"id":"1","result":"pass"}]}');
                 }
 
-                return AgentReply::fromStream('{"status":"done","summary":"ok","assumptions":[]}');
+                return factoryReply('{"status":"done","summary":"ok","assumptions":[]}');
             }
         };
 
@@ -2233,6 +2234,20 @@ function factoryResultStream(string $payload): string
     return is_string($encoded) ? $encoded : $payload;
 }
 
+function factoryReply(string $json): AgentReply
+{
+    $driver = new CursorDriver(30);
+    $reply = $driver->parse($json);
+    if ($reply->status !== 'unknown') {
+        return $reply;
+    }
+
+    $payload = json_decode($json, true);
+    $chatId = is_array($payload) ? ($payload['session_id'] ?? null) : null;
+
+    return AgentReply::fromContractText($json, is_string($chatId) && $chatId !== '' ? $chatId : null);
+}
+
 function factoryAgent(Closure $reply): AgentClient
 {
     return new class($reply) implements AgentClient
@@ -2241,7 +2256,7 @@ function factoryAgent(Closure $reply): AgentClient
 
         public function run(string $cwd, string $model, string $prompt, ?string $chatId): AgentReply
         {
-            return AgentReply::fromStream(($this->reply)($cwd, $prompt));
+            return factoryReply(($this->reply)($cwd, $prompt));
         }
     };
 }

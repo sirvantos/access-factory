@@ -4,7 +4,7 @@
 declare(strict_types=1);
 
 use Access\Factory\Contract;
-use Access\Factory\CursorAgent;
+use Access\Factory\CursorDriver;
 use Access\Factory\FactoryLog;
 use Access\Factory\FactoryStop;
 use Access\Factory\GitRepo;
@@ -54,7 +54,7 @@ $workflow = new Workflow(
     $root,
     $contract,
     new GitRepo($root),
-    new CursorAgent($contract->agentTimeout(), $log),
+    new CursorDriver($contract->agentTimeout(), $log),
     new ScriptFeatureScaffolder,
     $log,
 );
