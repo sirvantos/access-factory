@@ -4,6 +4,25 @@ declare(strict_types=1);
 
 use Access\Factory\AgentReply;
 
+it('reads a factory object the driver already extracted', function () {
+    $reply = AgentReply::fromContractText(
+        "working\n".'{"status":"done","summary":"ok","assumptions":[]}',
+        'chat-1',
+    );
+
+    expect($reply->status)->toBe('done')
+        ->and($reply->chatId)->toBe('chat-1')
+        ->and($reply->blocksApproval())->toBeFalse();
+});
+
+it('returns unknown when the extracted text has no factory object', function () {
+    $reply = AgentReply::fromContractText('still working', null);
+
+    expect($reply->status)->toBe('unknown')
+        ->and($reply->chatId)->toBeNull()
+        ->and($reply->payload)->toBe([]);
+});
+
 it('reads the final status from a stream', function () {
     $reply = AgentReply::fromStream(<<<'JSON'
     {"type":"system","session_id":"chat-1"}

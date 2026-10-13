@@ -63,6 +63,12 @@ final class AgentReply
             }
         }
 
+        return self::fromContractText($text, $chatId);
+    }
+
+    public static function fromContractText(string $text, ?string $chatId): self
+    {
+        $text = trim($text);
         $payload = self::lastPayload($text);
         $status = 'unknown';
         if (isset($payload['status']) && is_string($payload['status'])) {
@@ -71,7 +77,7 @@ final class AgentReply
             $status = $payload['verdict'];
         }
 
-        return new self($status, trim($text), $chatId, $payload);
+        return new self($status, $text, $chatId !== '' ? $chatId : null, $payload);
     }
 
     public function blocksApproval(): bool
