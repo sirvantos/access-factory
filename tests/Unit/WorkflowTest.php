@@ -2312,6 +2312,46 @@ it('stops resume when the stored driver differs and still reports status', funct
     }
 });
 
+it('does not reopen a stopped run when the stored driver differs', function () {
+    $root = factoryRoot();
+
+    try {
+        $dir = 'specs/001-demo';
+        mkdir($root.'/'.$dir.'/.factory', 0777, true);
+        file_put_contents($root.'/.specify/feature.json', json_encode(['feature_directory' => $dir]));
+        $stop = [
+            'reason' => 'agent_failed',
+            'detail' => 'claude broke',
+            'resume_at' => 'specify',
+        ];
+        $state = FactoryState::fromArray([
+            'feature_dir' => $dir,
+            'branch' => '001-demo',
+            'description' => 'Record a gate pass',
+            'next' => 'stopped',
+            'stop' => $stop,
+            'driver' => 'cursor',
+        ]);
+        $statePath = $root.'/'.$dir.'/.factory/state.json';
+        file_put_contents($statePath, json_encode($state->toArray())."\n");
+        $calls = 0;
+        $workflow = factoryWorkflow($root, factoryAgent(function () use (&$calls): string {
+            $calls++;
+
+            return '{"status":"done","summary":"ok","assumptions":[]}';
+        }, 'claude'));
+
+        expect(fn () => $workflow->resume())->toThrow(FactoryStop::class, 'driver_mismatch');
+        expect($calls)->toBe(0);
+
+        $decoded = json_decode((string) file_get_contents($statePath), true);
+        expect(is_array($decoded) ? ($decoded['next'] ?? null) : null)->toBe('stopped')
+            ->and(is_array($decoded) ? ($decoded['stop'] ?? null) : null)->toBe($stop);
+    } finally {
+        factoryRemove($root);
+    }
+});
+
 function factoryWorkflow(string $root, AgentDriver $agent, ?FeatureScaffolder $scaffolder = null, int $retries = 0, string $verify = 'true', string $reviewMode = 'strict', string $mode = 'full', ?FactoryLog $log = null): Workflow
 {
     return new Workflow(

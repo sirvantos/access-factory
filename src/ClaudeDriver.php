@@ -48,8 +48,6 @@ final class ClaudeDriver implements AgentDriver
             $model,
             '--permission-mode',
             'bypassPermissions',
-            '--permission-prompts',
-            'none',
         ];
 
         if ($chatId !== null && $chatId !== '') {

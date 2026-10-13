@@ -81,6 +81,12 @@ final class Workflow
         }
 
         if ($state->next === 'stopped') {
+            if ($state->driver !== $this->agent->name()) {
+                throw new FactoryStop(
+                    'driver_mismatch',
+                    'driver_mismatch: this run uses '.$state->driver.' and the current driver is '.$this->agent->name().'.',
+                );
+            }
             $this->reopen($state);
         }
 

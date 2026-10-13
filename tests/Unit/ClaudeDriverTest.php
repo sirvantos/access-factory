@@ -21,8 +21,6 @@ it('builds the claude command and resumes only with a session id', function () {
         'sonnet',
         '--permission-mode',
         'bypassPermissions',
-        '--permission-prompts',
-        'none',
         'do the thing',
     ];
 
@@ -37,8 +35,6 @@ it('builds the claude command and resumes only with a session id', function () {
             'sonnet',
             '--permission-mode',
             'bypassPermissions',
-            '--permission-prompts',
-            'none',
             '--resume',
             'chat-9',
             'do the thing',

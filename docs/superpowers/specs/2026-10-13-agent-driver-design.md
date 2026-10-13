@@ -111,12 +111,12 @@ A non-zero exit with empty stdout stops as `agent_failed`, using the process err
 Command, with the worktree as the process directory:
 
 ```text
-claude -p --output-format stream-json --model <model> --permission-mode bypassPermissions --permission-prompts none [--resume <session id>] <prompt>
+claude -p --output-format stream-json --model <model> --permission-mode bypassPermissions [--resume <session id>] <prompt>
 ```
 
 `--resume` is present only when the session id is non-empty. Session persistence stays on. `--include-partial-messages` and `--bare` stay off.
 
-The sandbox file is `.claude/settings.json` with the same `permissions.allow` / `permissions.deny` shape. Claude matches file writes with `Edit(path)` rules, and those rules cover Write, so each shared path is rendered as `Edit(<path>)`. The Claude deny list also includes `Edit(.claude/**)`. `bypassPermissions` still honors those deny rules. `--permission-prompts none` denies a leftover prompt so the run does not wait.
+The sandbox file is `.claude/settings.json` with the same `permissions.allow` / `permissions.deny` shape. Claude matches file writes with `Edit(path)` rules, and those rules cover Write, so each shared path is rendered as `Edit(<path>)`. The Claude deny list also includes `Edit(.claude/**)`. `bypassPermissions` still honors those deny rules.
 
 `vet` requires `.claude/settings.json` at the repo root with `permissions.allow` present as an array. The message is `.claude/settings.json needs permissions.allow.` A Claude vet does not check `.cursor/cli.json`.
 
